@@ -1,57 +1,111 @@
 import { Client } from '@stomp/stompjs';
 import SockJS from 'sockjs-client';
 
-const WS_URL = 'http://localhost:8080/ws';
-const API_URL = 'http://localhost:8080/api';
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080/api';
+const WS_URL  = import.meta.env.VITE_WS_URL  || 'http://localhost:8080/ws';
 
 let stompClient = null;
 let subscriptions = {};
 
+// ---- Helper: ambil token dari localStorage ----
+function getAuthHeaders() {
+  const token = localStorage.getItem('auth_token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function fetchJson(url, options = {}) {
+  const res = await fetch(url, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeaders(),
+      ...(options.headers || {}),
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  // 204 No Content
+  if (res.status === 204) return null;
+  return res.json();
+}
+
 export const api = {
-  async createRoom(playerName, color) {
-    const res = await fetch(`${API_URL}/rooms`, {
+  // ---- Auth ----
+  async register(username, password) {
+    return fetchJson(`${API_URL}/auth/register`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+  },
+
+  async login(username, password) {
+    const data = await fetchJson(`${API_URL}/auth/login`, {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+    // Simpan token dan data user ke localStorage
+    localStorage.setItem('auth_token', data.token);
+    localStorage.setItem('auth_user', JSON.stringify({
+      id: data.id,
+      username: data.username,
+      lastColor: data.lastColor,
+    }));
+    return data;
+  },
+
+  logout() {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_user');
+  },
+
+  getStoredUser() {
+    const raw = localStorage.getItem('auth_user');
+    return raw ? JSON.parse(raw) : null;
+  },
+
+  async updateLastColor(color) {
+    return fetchJson(`${API_URL}/auth/me/color`, {
+      method: 'PUT',
+      body: JSON.stringify({ color }),
+    });
+  },
+
+  // ---- Room ----
+  async createRoom(playerName, color) {
+    return fetchJson(`${API_URL}/rooms`, {
+      method: 'POST',
       body: JSON.stringify({ playerName, color: color.toUpperCase() }),
     });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
   },
 
   async joinRoom(playerName, color, roomCode) {
-    const res = await fetch(`${API_URL}/rooms/join`, {
+    return fetchJson(`${API_URL}/rooms/join`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ playerName, color: color.toUpperCase(), roomCode }),
     });
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
   },
 
   async getRoom(code, playerId) {
-    const res = await fetch(`${API_URL}/rooms/${code}?playerId=${playerId}`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return fetchJson(`${API_URL}/rooms/${code}?playerId=${playerId}`);
   },
 
   async disbandRoom(code) {
-    await fetch(`${API_URL}/rooms/${code}`, { method: 'DELETE' });
+    return fetchJson(`${API_URL}/rooms/${code}`, { method: 'DELETE' });
   },
 
+  // ---- Game ----
   async startGame(roomCode) {
-    const res = await fetch(`${API_URL}/game/${roomCode}/start`, { method: 'POST' });
-    if (!res.ok) throw new Error(await res.text());
+    return fetchJson(`${API_URL}/game/${roomCode}/start`, { method: 'POST' });
   },
 
   async retryGame(roomCode) {
-    const res = await fetch(`${API_URL}/game/${roomCode}/retry`, { method: 'POST' });
-    if (!res.ok) throw new Error(await res.text());
+    return fetchJson(`${API_URL}/game/${roomCode}/retry`, { method: 'POST' });
   },
 
   async getStats(playerId) {
-    const res = await fetch(`${API_URL}/game/stats/${playerId}`);
-    if (!res.ok) throw new Error(await res.text());
-    return res.json();
+    return fetchJson(`${API_URL}/game/stats/${playerId}`);
   },
 };
 
@@ -60,6 +114,7 @@ export const ws = {
     stompClient = new Client({
       webSocketFactory: () => new SockJS(WS_URL),
       reconnectDelay: 3000,
+      connectHeaders: getAuthHeaders(),
       onConnect: () => {
         console.log('WebSocket connected');
         onConnected?.();
